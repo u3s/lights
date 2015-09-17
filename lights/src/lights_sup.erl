@@ -28,7 +28,18 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, { {one_for_all, 0, 1}, []} }.
+    SupFlags =
+	#{strategy => one_for_all,
+	  intensity => 0,
+	  period => 1},
+    ChildSpec =
+	#{id => tl,
+	  start => {tl, start_link, []},
+	  restart => permanent,
+	  shutdown => 60000,
+	  type => worker, 
+	  modules => [tl]},
+    {ok, { SupFlags, [ChildSpec]} }.
 
 %%====================================================================
 %% Internal functions
