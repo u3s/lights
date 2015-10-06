@@ -7,8 +7,14 @@
 -ifndef(TL_HRL).
 -define(TL_HRL, true).
 -record(lamps, {
-	  red = off,
-	  yellow = off,
-	  green = off
+	  red    :: off | on,
+	  yellow :: off | on | blinking,
+	  green  :: off | on
 	  }).
+
+-record(robot, {
+	  id,
+	  pid  :: pid(),        % fsm process pid
+	  spid :: pid()         % start_cycle process Pid
+		  }).
 -endif.

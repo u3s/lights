@@ -14,7 +14,8 @@
 
 %% API
 -export([start_link/0]).
--export([switch_next/1, set_emergency/1, set_normal/1]).
+-export([switch_next/1, set_emergency/1, set_normal/1,
+	 get_lamps/1, get_emergency_state/1]).
 %% gen_fsm callbacks
 -export([init/1, red/3, red_yellow/3, green/3, yellow/3,
 	 emergency/2, handle_event/3,
@@ -23,8 +24,8 @@
 %-define(SERVER, ?MODULE).
 
 -record(state, {
-	  pid,
-	  lamps = #lamps{}
+	  lamps = #lamps{},
+	  emergency_state :: normal | emergency
 	 }).
 
 %%%===================================================================
@@ -50,7 +51,13 @@ set_emergency(Pid) ->
     gen_fsm:send_all_state_event(Pid, set_emergency).
 
 set_normal(Pid) ->
-    gen_fsm:send_event(Pid, normal).
+    gen_fsm:send_event(Pid, set_normal).
+
+get_lamps(Pid) ->
+    gen_fsm:sync_send_all_state_event(Pid, get_lamps).
+
+get_emergency_state(Pid) ->
+    gen_fsm:sync_send_all_state_event(Pid, get_emergency_state).
  
 %%%===================================================================
 %%% gen_fsm callbacks
@@ -72,8 +79,8 @@ set_normal(Pid) ->
 init([]) ->
     LampsInit = set_lamps(on, off, off),
     {ok, yellow, #state{
-		    pid = self(),
-		    lamps = LampsInit
+		    lamps = LampsInit,
+		    emergency_state = normal
 		   }}.
 
 %%--------------------------------------------------------------------
@@ -91,8 +98,10 @@ init([]) ->
 %%                   {stop, Reason, NewState}
 %% @end
 %%--------------------------------------------------------------------
-emergency(normal, State) ->
-    {next_state, red, State#state{lamps = set_lamps(on, off, off)}}.
+emergency(set_normal, State) ->
+    {next_state, red, State#state{
+			lamps = set_lamps(on, off, off),
+			emergency_state = normal}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -142,7 +151,10 @@ yellow(switch_next, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_event(set_emergency, _StateName, State) ->
-    {next_state, emergency, State#state{lamps = set_lamps(off, blinking, off)}};
+    {next_state, emergency, State#state{
+			      lamps = set_lamps(off, blinking, off),
+			      emergency_state = emergency}};
+    
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
 
@@ -162,6 +174,14 @@ handle_event(_Event, StateName, State) ->
 %%                   {stop, Reason, Reply, NewState}
 %% @end
 %%--------------------------------------------------------------------
+handle_sync_event(get_lamps, _From, StateName, State) ->
+    Reply = State#state.lamps,
+    {reply, Reply, StateName, State};
+
+handle_sync_event(get_emergency_state, _From, StateName, State) ->
+    Reply = State#state.emergency_state,
+    {reply, Reply, StateName, State};
+
 handle_sync_event(_Event, _From, StateName, State) ->
     Reply = ok,
     {reply, Reply, StateName, State}.
