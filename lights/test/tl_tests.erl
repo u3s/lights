@@ -1,10 +1,6 @@
 -module(tl_tests).
 -include("../include/tl.hrl").
 -include_lib("eunit/include/eunit.hrl").
--define(ROBOT_1, "robot/1").
--define(ROBOT_2, "robot/2").
--define(ROBOT_3, "robot/3").
--define(ROBOT_4, "robot/4").
 
 tl_test_() ->
       {setup,
@@ -40,103 +36,117 @@ tl_test_() ->
        }}.
 
 setup() ->
-    application:start(lights), ok.
+    application:start(lights),
+    tl_event:add_handler(),
+    ok.
 
 cleanup(_) ->
     application:stop(lights).
 
 add() ->
+    ?assertEqual([], tl:list()),
     tl:add(),
-    ?assertMatch([{robot, R1,_,_}]
-		 when R1 == ?ROBOT_1,
-		      tl:list()).
-remove() ->
-    ?assertMatch([{robot, R1,_,_}]
-		 when R1 == ?ROBOT_1,
+    [{robot, R1, _, undefined}] = tl:list(),
+    ?assertMatch([{robot, R1, _P1, undefined}]
+		 when is_list(R1) andalso
+		      is_pid(_P1),
 		      tl:list()),
-    tl:remove(?ROBOT_1),
+    {"robot/", _Id1}=lists:split(6,R1).
+
+remove() ->
+    ?assertMatch([{robot, R1, _P1, undefined}]
+		 when is_list(R1) andalso
+		      is_pid(_P1),
+		      tl:list()),
+    [{robot, R1, _, undefined}] = tl:list(),
+    tl:remove(R1),
     ?assertEqual([], tl:list()).
 
 remove_not_existing() ->
     ?assertMatch([], tl:list()),
-    ?assertMatch({error, does_not_exist},
-		 tl:remove(?ROBOT_1)).
+    ok = tl:remove("robot/100"),
+    ?assertMatch([], tl:list()).
+
 lookup_ok() ->
-    ?assertEqual({ok, ?ROBOT_1}, tl:lookup(?ROBOT_1)).
+    [{robot, R1, _, undefined}] = tl:list(),
+    ?assertEqual({ok, R1}, tl:lookup(R1)).
 
 lookup_nok() ->
-    ?assertEqual({{error, not_found}, ?ROBOT_2}, tl:lookup(?ROBOT_2)).
+    ?assertEqual({{error, not_found}, "robot/200"}, tl:lookup("robot/200")).
 
 list() ->
     tl:add(),
-    ?assertMatch([{robot, R2, RPid2, undefined},
-		  {robot, R1, RPid1, undefined}]
-		 when R2 == ?ROBOT_2 andalso
-		      R1 == ?ROBOT_1 andalso
-		      is_pid(RPid2) andalso
-		      is_pid(RPid1),
-		 tl:list()),
-    tl:remove(?ROBOT_2).
+    [{robot, R2, _, undefined},
+     {robot, R1, _, undefined}] = tl:list(),
+    ?assertMatch([{robot, R2, _RPid2, undefined},
+		  {robot, R1, _RPid1, undefined}]
+		 when is_list(R2) andalso
+		      is_list(R1) andalso
+		      is_pid(_RPid2) andalso
+		      is_pid(_RPid1),
+		      tl:list()),
+    {"robot/", LId2} = lists:split(6, R2),
+    {"robot/", LId1} = lists:split(6, R1),
+    Id1 = list_to_integer(LId1),
+    Id2 = list_to_integer(LId2),
+    ?assertEqual(Id2, Id1+1),
+    tl:remove(R2).
 
 list_empty() ->
     ?assertEqual([], tl:list()).
 
 start_cycle() ->
-    ok = tl:start_cycle(?ROBOT_1),
+    [{robot, R1, _RPid, undefined} | _Rest] = tl:list(),
+    ok = tl:start_cycle(R1),
     ?assertMatch([{robot, R1, _, SPid}]
-		when R1 == ?ROBOT_1 andalso
-		     is_pid(SPid),
-		     tl:list()).
+		 when is_pid(SPid),
+		      tl:list()).
 
 stop_cycle() ->
-    ?assertMatch([{robot, R1, _, SPid}]
-		when R1 == ?ROBOT_1 andalso
-		     is_pid(SPid),
-		     tl:list()),
-    ok = tl:stop_cycle(?ROBOT_1),
-    ?assertMatch([{robot, R1, _, undefined}]
-		 when R1 == ?ROBOT_1,
-		      tl:list()).
+    [{robot, R1, _RPid, _Spid} | _Rest] = tl:list(),
+    ?assertMatch([{robot, R1, _, _SPid} | _Rest]
+		 when is_pid(_SPid),
+		      tl:list()),
+    ok = tl:stop_cycle(R1),
+    ?assertMatch([{robot, R1, _, undefined} | _Rest],
+		 tl:list()).
 
 try_remove_cycling() ->
-    ?assertMatch([{robot, R1, _, SPid}]
-		when R1 == ?ROBOT_1 andalso
-		     is_pid(SPid),
-		     tl:list()),
-    ?assertEqual({warning, robot_active}, tl:remove(?ROBOT_1)),
-    ?assertMatch([{robot, R1, _, SPid}]
-		when R1 == ?ROBOT_1 andalso
-		     is_pid(SPid),
-		     tl:list()).
-
-stop_cycle_not_cycling() ->
-    ?assertMatch([{robot, R1, _, undefined}]
-		 when R1 == ?ROBOT_1,
-		      tl:list()),
-    ok = tl:stop_cycle(?ROBOT_1),
-    ?assertMatch([{robot, R1, _, undefined}]
-		 when R1 == ?ROBOT_1,
+    [{robot, R1, _, _} | _Rest] = tl:list(),
+    ?assertMatch([{robot, R1, _, _SPid}]
+		 when  is_pid(_SPid),
+		       tl:list()),
+    ok = tl:remove(R1),
+    ?assertMatch([{robot, R1, _, _SPid}]
+		 when is_pid(_SPid),
 		      tl:list()).
 
+stop_cycle_not_cycling() ->
+    [{robot, R1, _RPid, undefined} | _Rest] = tl:list(),
+    ?assertMatch([{robot, R1, _, undefined}],
+		 tl:list()),
+    ok = tl:stop_cycle(R1),
+    ?assertMatch([{robot, R1, _, undefined}],
+		 tl:list()).
+
 start_cycle_already_cycling() ->
-    ?assertMatch([{robot, R1, _, SPid}]
-		 when R1 == ?ROBOT_1 andalso
-		      is_pid(SPid),
+    [{robot, R1, _RPid, _} | _Rest] = tl:list(),
+    ?assertMatch([{robot, R1, _, _SPid}]
+		 when is_pid(_SPid),
 		      tl:list()),
-    ok = tl:start_cycle(?ROBOT_1),
-    ?assertMatch([{robot, R1, _, SPid}]
-		 when R1 == ?ROBOT_1 andalso
-		      is_pid(SPid),
+    ok = tl:start_cycle(R1),
+    ?assertMatch([{robot, R1, _, _SPid}]
+		 when is_pid(_SPid),
 		      tl:list()).    
 
 start_cycle_not_existing() ->
     ?assertEqual([], tl:list()),
-    ok = tl:start_cycle(?ROBOT_1),
+    ok = tl:start_cycle("robot/303"),
     ?assertEqual([], tl:list()).
 
 stop_cycle_not_existing_robot() ->
     ?assertEqual([], tl:list()),
-    ok = tl:stop_cycle(?ROBOT_1),
+    ok = tl:stop_cycle("robot/409"),
     ?assertEqual([], tl:list()).
 
 add_10() ->
@@ -151,12 +161,12 @@ add_10() ->
 
 remove_all() ->
     ?assertEqual(10,length(tl:list())),    
-    ?assertEqual(11,
+    ?assertEqual(12,				% event manager
 		 length(supervisor:
 			    which_children(lights_sup))),
     ok = tl:remove_all(),
     ?assertEqual([], tl:list()),
-    ?assertEqual(1,
+    ?assertEqual(2,				% event manager
 		 length(supervisor:
 			    which_children(lights_sup))).    
 
@@ -167,13 +177,16 @@ add_10_start_cycle_5() ->
 		   tl:add(),
 		   Loop(N-1);
 	       Loop(N) ->
+		   Before = tl:list(),
 		   tl:add(),
-		   tl:start_cycle("robot/"++integer_to_list(10-N)),
+		   After = tl:list(),
+		   [#robot{id=JustAdded} | Before] = After, % test and decompose
+		   tl:start_cycle(JustAdded),
 		   Loop(N-1)
 	   end,
     Run(10),
     ?assertEqual(10,length(tl:list())),    
-    ?assertEqual(11,
+    ?assertEqual(12,				% event manager
 		 length(supervisor:
 			    which_children(lights_sup))),
     {Cycling, NotCycling} =
@@ -188,62 +201,69 @@ remove_all_some_switching() ->
     ?assertEqual({5,5}, {length(Cycling),length(NotCycling)}),
     ok = tl:remove_all(),
     ?assertEqual([], tl:list()),
-    ?assertEqual(1,
+    ?assertEqual(2,				% event manager
 		 length(supervisor:
 			    which_children(lights_sup))).
 
 kill_switch_process_then_stop_cycle() ->
     tl:add(),
-    tl:start_cycle(?ROBOT_1),
-    ?assertMatch([{robot, R1, _, SPid}]
-		 when R1 == ?ROBOT_1 andalso
-		      is_pid(SPid),    
+    [{robot, R1, _, undefined} | _Rest] = tl:list(),
+    tl:start_cycle(R1),
+    [{robot, R1, _, SPid} | _Rest] = tl:list(),
+    ?assertMatch([{robot, R1, _, SPid} | _Rest]
+		 when is_pid(SPid),    
 		      tl:list()),
-    [#robot{spid=SPid}] = tl:list(),
     exit(SPid, stop),
-    tl:stop_cycle(?ROBOT_1),
-    ?assertMatch([{robot, R1, _, undefined}]
-		 when R1 == ?ROBOT_1,   
-		      tl:list()).
+    tl:stop_cycle(R1),
+    ?assertMatch([{robot, R1, _, undefined} | _Rest],
+		 tl:list()).
 
 set_emergency() ->
-    ok = tl:set_emergency(?ROBOT_1).
+    [{robot, R1, _, undefined} | _Rest] = tl:list(),
+    ?assertEqual(normal,
+		 tl:get_emergency(R1)),
+    ok = tl:set_emergency(R1),
+    ?assertEqual(emergency,
+		 tl:get_emergency(R1)).
 
 get_emergency() ->
+    [{robot, R1, _, undefined} | _Rest] = tl:list(),
     ?assertEqual(emergency,
-		 tl:get_emergency(?ROBOT_1)),
+		 tl:get_emergency(R1)),
     tl:add(),
+    [{robot, R2, _, undefined} | _Rest2] = tl:list(),
     ?assertEqual(normal,
-		 tl:get_emergency(?ROBOT_2)),
-    tl:remove(?ROBOT_2).
+		 tl:get_emergency(R2)),
+    tl:remove(R2).
 
 start_cycle_then_set_emergency() ->
+    [{robot, R1, _, undefined} | _Rest] = tl:list(),
     ?assertEqual(emergency,
-		 tl:get_emergency(?ROBOT_1)),
-    ok = tl:start_cycle(?ROBOT_1),
+		 tl:get_emergency(R1)),
+    ok = tl:start_cycle(R1),
     ?assertEqual(normal,
-		 tl:get_emergency(?ROBOT_1)),
-    ?assertMatch([{robot, R1, _, SPid}]
-		 when R1 == ?ROBOT_1 andalso
-		      is_pid(SPid),    
+		 tl:get_emergency(R1)),
+    ?assertMatch([{robot, R1, _, _SPid}]
+		 when is_pid(_SPid),    
 		      tl:list()),
-    tl:set_emergency(?ROBOT_1),
+    tl:set_emergency(R1),
     ?assertEqual(emergency,
-		 tl:get_emergency(?ROBOT_1)),
-    ?assertMatch([{robot, R1, _, undefined}]
-		 when R1 == ?ROBOT_1,   
-		      tl:list()).
+		 tl:get_emergency(R1)),
+    ?assertMatch([{robot, R1, _, undefined}],
+		 tl:list()).
     
 get_emergency_not_existing() ->
     ?assertEqual({error, does_not_exist},
-		 tl:get_emergency(?ROBOT_3)).
+		 tl:get_emergency("robot/599")).
 
 get_lamps() ->
-    tl:start_cycle(?ROBOT_1),
+    [{robot, R1, _, undefined} | _Rest] = tl:list(),
+    tl:start_cycle(R1),
     tl:add(),
-    ?assertMatch(#lamps{}, tl:get_lamps(?ROBOT_1)),
-    ?assertMatch(#lamps{}, tl:get_lamps(?ROBOT_2)).
+    [{robot, R2, _, undefined} | _Rest2] = tl:list(),
+    ?assertMatch(#lamps{}, tl:get_lamps(R1)),
+    ?assertMatch(#lamps{}, tl:get_lamps(R2)).
 
 get_lamps_not_existing() ->
     ?assertEqual({error, does_not_exist},
-		 tl:get_lamps(?ROBOT_3)).
+		 tl:get_lamps("robot/1908")).

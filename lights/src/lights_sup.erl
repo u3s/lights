@@ -32,14 +32,22 @@ init([]) ->
 	#{strategy => one_for_all,
 	  intensity => 0,
 	  period => 1},
-    ChildSpec =
+    Tl_server =
 	#{id => tl,
 	  start => {tl, start_link, []},
 	  restart => permanent,
 	  shutdown => 60000,
 	  type => worker, 
 	  modules => [tl]},
-    {ok, { SupFlags, [ChildSpec]} }.
+    Tl_event_manager =
+	#{id => tl_logger,
+	  start => {tl_logger, start_link, []},
+	  restart => permanent,
+	  shutdown => 60000,
+	  type => worker,
+	  modules => [tl_logger]},
+    Children = [Tl_event_manager, Tl_server],
+    {ok, { SupFlags, Children} }.
 
 %%====================================================================
 %% Internal functions

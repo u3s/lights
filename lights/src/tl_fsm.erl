@@ -78,7 +78,7 @@ get_emergency_state(Pid) ->
 %%--------------------------------------------------------------------
 init([]) ->
     LampsInit = set_lamps(on, off, off),
-    {ok, yellow, #state{
+    {ok, red, #state{
 		    lamps = LampsInit,
 		    emergency_state = normal
 		   }}.
