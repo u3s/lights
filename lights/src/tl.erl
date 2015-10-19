@@ -35,7 +35,8 @@
 	  timer_red_yellow = 0,
 	  timer_green = 0,
 	  timer_yellow = 0,
-	  robots :: [] | [#robot{}]	% list of active tl_fsm robots
+	  robots :: [] | [#robot{}],	% list of active tl_fsm robots
+	  next_robot :: integer()
 	 }).
 
 %%%===================================================================
@@ -62,7 +63,7 @@ stop() ->
 %% @end
 %%--------------------------------------------------------------------
 add() ->
-    gen_server:call(?SERVER, add).
+    gen_server:cast(?SERVER, add).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -73,7 +74,7 @@ add() ->
 %% @end
 %%--------------------------------------------------------------------
 remove(Name) ->
-    gen_server:call(?SERVER, {remove, Name}).
+    gen_server:cast(?SERVER, {remove, Name}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -181,12 +182,15 @@ get_lamps(Name) ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+    %% logger must be started first
+    tl_logger:start_server(?SERVER),
     {ok, #state{
 	    timer_red = ?TIME_R,
 	    timer_red_yellow = ?TIME_RY,
 	    timer_green = ?TIME_G,
 	    timer_yellow = ?TIME_Y,
-	    robots = []
+	    robots = [],
+	    next_robot = 1
 	   }}.
 
 %%--------------------------------------------------------------------
@@ -203,34 +207,6 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(add, _From, State) ->
-    ChildSpec =
-	#{id => "robot/" ++ integer_to_list(length(State#state.robots)+1),
-	  start => {tl_fsm, start_link, []},
-	  period => 1},
-    {ok, RobotPid} = supervisor:start_child(lights_sup, ChildSpec),
-    Reply = RobotPid,
-    #{id := Name} = ChildSpec,
-      {reply, Reply,
-       State#state{
-	 robots=lists:append([#robot{id=Name, pid = RobotPid}],
-			     State#state.robots)}};
-
-handle_call({remove, Name}, _From, State) ->
-    case lists:keyfind(Name, 2, State#state.robots) of
-	#robot{id=Name} ->
-	    case is_switching(Name, State) of
-		false ->
-		    supervisor:terminate_child(lights_sup, Name),
-		    supervisor:delete_child(lights_sup, Name),
-		    {reply, ok, State#state{robots=lists:keydelete(Name, 2,
-								State#state.robots)}};
-		true ->
-		    {reply, {warning, robot_active}, State}
-	    end;
-	false -> {reply, {error, does_not_exist}, State}
-    end;
-
 handle_call(list, _From, State) ->
     Reply = State#state.robots,
     {reply, Reply, State};
@@ -279,29 +255,64 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast(add, State) ->
+    ChildSpec =
+	#{id => "robot/" ++ integer_to_list(State#state.next_robot),
+	  start => {tl_fsm, start_link, []},
+	  period => 1},
+    {ok, RobotPid} = supervisor:start_child(lights_sup, ChildSpec),
+    #{id := Name} = ChildSpec,
+    tl_logger:add(Name),
+    {noreply, State#state{
+		robots=lists:append([#robot{id=Name, pid = RobotPid}],
+				    State#state.robots),
+		next_robot=State#state.next_robot+1}};
+
+handle_cast({remove, Name}, State) ->
+    case lists:keyfind(Name, 2, State#state.robots) of
+	#robot{id=Name} ->
+	    case is_switching(Name, State) of
+		false ->
+		    supervisor:terminate_child(lights_sup, Name),
+		    supervisor:delete_child(lights_sup, Name),
+		    tl_logger:remove(Name),
+		    {noreply, State#state{robots=lists:keydelete(Name, 2,
+								State#state.robots)}};
+		true ->
+		    tl_logger:remove_error(Name, refused_robot_active),
+		    {noreply, State}
+	    end;
+	false ->
+	    tl_logger:remove_error(Name, does_not_exist),
+	    {noreply, State}
+    end;
+
 handle_cast({start_cycle, Id}, State) ->
     case lists:keyfind(Id, 2, State#state.robots) of
 	#robot{id=Id, pid=RPid, spid=SPid}=OldRobot ->
 	    case SPid of
 		_Pid when is_pid(_Pid) ->
-		    io:format("~w already switching", [Id]),
+		    tl_logger:start_switch_error(Id, already_switching),
 		    {noreply, State};
 		undefined ->
 		    case tl_fsm:get_emergency_state(RPid) of
 			emergency ->
-			    tl_fsm:set_normal(RPid);
+			    tl_fsm:set_normal(RPid),
+			    tl_logger:normal(Id);
 			normal ->
 			    ok
 		    end,
 		    {NewSPid, _MRef} = spawn_monitor(?MODULE, switch_loop, [Id, RPid, State]),
+		    tl_logger:start_switch(Id, NewSPid),
 	    	    NewState = State#state{
 				 robots=
 				     lists:keyreplace(Id, 2, State#state.robots,
 						      OldRobot#robot{spid=NewSPid})},
 		    {noreply, NewState}
 	    end;
-	false -> io:format("Id ~w  not found, ~p~n", [Id, State]),
-		 {noreply, State}	 
+	false ->
+	    tl_logger:start_switch_error(Id, not_found),
+	    {noreply, State}
     end;
 
 handle_cast({stop_cycle, Id}, State) ->
@@ -310,8 +321,9 @@ handle_cast({stop_cycle, Id}, State) ->
 	    NewState =
 		kill_switching_process(Id, SPid, OldRobot, State),
 	    {noreply, NewState};
-	false -> io:format("Id ~p not found, ~p~n", [Id, State]),
-		 {noreply, State}	 
+	false ->
+	    tl_logger:stop_switch_error(Id, not_found),
+	    {noreply, State}	 
     end;
 
 handle_cast(remove_all, State) ->
@@ -319,16 +331,19 @@ handle_cast(remove_all, State) ->
 			case is_switching(Id, State) of
 			    false ->
 				supervisor:terminate_child(lights_sup, Id),
-				supervisor:delete_child(lights_sup, Id);
+				supervisor:delete_child(lights_sup, Id),
+				tl_logger:remove(Id);
 			    true ->
 				#robot{spid=SPid} =
 				    lists:keyfind(Id, 2, State#state.robots),
 				exit(SPid, normal),
+				tl_logger:stop_switch(Id),
 				supervisor:terminate_child(lights_sup, Id),
-				supervisor:delete_child(lights_sup, Id)
+				supervisor:delete_child(lights_sup, Id),
+				tl_logger:remove(Id)
 			end
 		  end,
-		[R_Id || {robot, R_Id, _, _} <- State#state.robots]),
+		[R_Id || #robot{id=R_Id} <- State#state.robots]),
     {noreply, State#state{robots=[]}};
 
 handle_cast({set_emergency, Id}, State) ->
@@ -337,13 +352,15 @@ handle_cast({set_emergency, Id}, State) ->
 	    NewState =
 		kill_switching_process(Id, SPid, OldRobot, State),
 	    tl_fsm:set_emergency(RPid),
+	    tl_logger:emergency(Id),
 	    {noreply, NewState};
 	false ->
-	    io:format("Id ~p not found~n", [Id]),
+	    tl_logger:emergency_error(Id, not_found),
 	    {noreply, State}	 
     end;
 
 handle_cast(stop, State) ->
+    tl_logger:stop_server(?SERVER),
     {stop, normal, State};
 
 handle_cast(_Msg, State) ->
@@ -359,9 +376,8 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({'DOWN', _Ref, process, Pid, stop}=Info, State) ->
-    io:format("Process ~w went 'DOWN' - no more switching expected, ~n"
-	      "The whole msg:~n~w~n", [Pid, Info]),
+handle_info({'DOWN', _Ref, process, Pid, stop}, State) ->
+    tl_logger:down(Pid),
     {noreply, State};
 
 handle_info(_Info, State) ->
@@ -396,26 +412,22 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 switch_loop(Id, Pid, State) ->
-    LampsR = tl_fsm:switch_next(Pid),
-    io:format("~p: R:~p Y:~p G:~p~n", [Id, LampsR#lamps.red,
-				       LampsR#lamps.yellow,
-				       LampsR#lamps.green]),
-    timer:sleep(State#state.timer_red),
     LampsRY = tl_fsm:switch_next(Pid),
-    io:format("~p: R:~p Y:~p G:~p~n", [Id, LampsRY#lamps.red,
-				       LampsRY#lamps.yellow,
-				       LampsRY#lamps.green]),
+    tl_logger:switch(Id, LampsRY, red_yellow),
     timer:sleep(State#state.timer_red_yellow),
+
     LampsG = tl_fsm:switch_next(Pid),
-    io:format("~p: R:~p Y:~p G:~p~n", [Id, LampsG#lamps.red,
-				       LampsG#lamps.yellow,
-				       LampsG#lamps.green]),
+    tl_logger:switch(Id, LampsG, green),
     timer:sleep(State#state.timer_green),
+
     LampsY = tl_fsm:switch_next(Pid),
-    io:format("~p: R:~p Y:~p G:~p~n", [Id, LampsY#lamps.red,
-				       LampsY#lamps.yellow,
-				       LampsY#lamps.green]),
+    tl_logger:switch(Id, LampsY, yellow),
     timer:sleep(State#state.timer_yellow),
+
+    LampsR = tl_fsm:switch_next(Pid),
+    tl_logger:switch(Id, LampsR, red),
+    timer:sleep(State#state.timer_red),
+
     switch_loop(Id, Pid, State).
 
 is_switching(Id, State) ->
@@ -437,18 +449,16 @@ kill_switching_process(Id, SPid, OldRobot, State)
     case is_process_alive(SPid) of
 	true ->
 	    exit(SPid, stop),
-	    false = is_process_alive(SPid); % debug code
+	    false = is_process_alive(SPid), % debug code
+	    tl_logger:stop_switch(Id);
 	false ->
-	    io:format("Someone hacked the system~n"
-		      "and killed process ~w~n"
-		      "so let's just update the list~n"
-		      "and remove this useless Pid~n",
-		      [SPid])
+	    tl_logger:stop_switch_error(Id, already_killed)
     end,
     State#state{robots=
 		    lists:keyreplace(Id, 2,
 				     State#state.robots,
 				     OldRobot#robot{spid=undefined})};
-kill_switching_process(_Id, _SPid, _OldRobot, State)
+kill_switching_process(Id, _SPid, _OldRobot, State)
   when _SPid == undefined ->
+    tl_logger:stop_switch_error(Id, not_switching),
     State.
