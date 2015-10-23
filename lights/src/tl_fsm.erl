@@ -13,7 +13,7 @@
 -include("../include/tl.hrl").
 
 %% API
--export([start_link/0]).
+-export([start_link/1]).
 -export([switch_next/1, set_emergency/1, set_normal/1,
 	 get_lamps/1, get_emergency_state/1]).
 %% gen_fsm callbacks
@@ -24,8 +24,10 @@
 %-define(SERVER, ?MODULE).
 
 -record(state, {
+	  name,
 	  lamps = #lamps{},
-	  emergency_state :: normal | emergency
+	  emergency_state :: normal | emergency,
+	  timer_ref
 	 }).
 
 %%%===================================================================
@@ -41,8 +43,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
-    gen_fsm:start_link(?MODULE, [], []).
+start_link(Name) ->
+    gen_fsm:start_link(?MODULE, [Name], []).
 
 switch_next(Pid) ->
     gen_fsm:sync_send_event(Pid, switch_next).
@@ -76,12 +78,14 @@ get_emergency_state(Pid) ->
 %%                     {stop, StopReason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->
-    LampsInit = set_lamps(on, off, off),
+init([Name]) ->
+    tl_logger:init_fsm(Name),
+    LampsInit = set_lamps(Name, on, off, off),
     {ok, red, #state{
-		    lamps = LampsInit,
-		    emergency_state = normal
-		   }}.
+		 name = Name,
+		 lamps = LampsInit,
+		 emergency_state = normal
+		}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -98,10 +102,34 @@ init([]) ->
 %%                   {stop, Reason, NewState}
 %% @end
 %%--------------------------------------------------------------------
-emergency(set_normal, State) ->
+emergency(switch, #state{name=Name, lamps=Lamps}=State) ->
+    Ref = gen_fsm:send_event_after(500, switch),
+    NewState =
+	case Lamps#lamps.yellow of
+	    on ->
+		{next_state, emergency, State#state{
+					  lamps = set_lamps(Name, off, off, off),
+					  emergency_state = emergency,
+					  timer_ref = Ref}};
+	    off ->
+		{next_state, emergency, State#state{
+					  lamps = set_lamps(Name, off, on, off),
+					  emergency_state = emergency,
+					  timer_ref = Ref}}
+	end,
+    NewState;
+
+emergency(set_normal, #state{name=Name}=State) ->
+    case State#state.timer_ref of
+	undefined ->
+	    ok;
+	Ref ->
+	    gen_fsm:cancel_timer(Ref)
+    end,
     {next_state, red, State#state{
-			lamps = set_lamps(on, off, off),
-			emergency_state = normal}}.
+			lamps = set_lamps(Name, on, off, off),
+			emergency_state = normal,
+			timer_ref = undefined}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -121,20 +149,20 @@ emergency(set_normal, State) ->
 %%                   {stop, Reason, Reply, NewState}
 %% @end
 %%--------------------------------------------------------------------
-red(switch_next, _From, State) ->
-    NewState = State#state{lamps = set_lamps(on, on, off)},
+red(switch_next, _From, #state{name=Name}=State) ->
+    NewState = State#state{lamps = set_lamps(Name, on, on, off)},
     Reply = NewState#state.lamps,
     {reply, Reply, red_yellow, NewState}.
-red_yellow(switch_next, _From, State) ->
-    NewState = State#state{lamps = set_lamps(off, off, on)},
+red_yellow(switch_next, _From, #state{name=Name}=State) ->
+    NewState = State#state{lamps = set_lamps(Name, off, off, on)},
     Reply = NewState#state.lamps,
     {reply, Reply, green, NewState}.
-green(switch_next, _From, State) ->
-    NewState = State#state{lamps = set_lamps(off, on, off)},
+green(switch_next, _From, #state{name=Name}=State) ->
+    NewState = State#state{lamps = set_lamps(Name, off, on, off)},
     Reply = NewState#state.lamps,
     {reply, Reply, yellow, NewState}.
-yellow(switch_next, _From, State) ->
-    NewState = State#state{lamps = set_lamps(on, off, off)},
+yellow(switch_next, _From, #state{name=Name}=State) ->
+    NewState = State#state{lamps = set_lamps(Name, on, off, off)},
     Reply = NewState#state.lamps,
     {reply, Reply, red, NewState}.
 %%--------------------------------------------------------------------
@@ -151,8 +179,8 @@ yellow(switch_next, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_event(set_emergency, _StateName, State) ->
+    _Ref = gen_fsm:send_event_after(500, switch),
     {next_state, emergency, State#state{
-			      lamps = set_lamps(off, blinking, off),
 			      emergency_state = emergency}};
     
 handle_event(_Event, StateName, State) ->
@@ -231,7 +259,8 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-set_lamps(Red, Yellow, Green) ->
+set_lamps(Name, Red, Yellow, Green) ->
+    tl_logger:set_lamps({Name, Red, Yellow, Green}),
     NewLamp = #lamps{red = Red,
 		     yellow = Yellow,
 		     green = Green

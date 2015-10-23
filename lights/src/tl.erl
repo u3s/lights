@@ -256,12 +256,13 @@ handle_call(_Request, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast(add, State) ->
+    Name = "robot/" ++ integer_to_list(State#state.next_robot),
     ChildSpec =
-	#{id => "robot/" ++ integer_to_list(State#state.next_robot),
-	  start => {tl_fsm, start_link, []},
+	#{id => Name,
+	  start => {tl_fsm, start_link,
+		    [Name]},
 	  period => 1},
     {ok, RobotPid} = supervisor:start_child(lights_sup, ChildSpec),
-    #{id := Name} = ChildSpec,
     tl_logger:add(Name),
     {noreply, State#state{
 		robots=lists:append([#robot{id=Name, pid = RobotPid}],
@@ -276,6 +277,7 @@ handle_cast({remove, Name}, State) ->
 		    supervisor:terminate_child(lights_sup, Name),
 		    supervisor:delete_child(lights_sup, Name),
 		    tl_logger:remove(Name),
+		    tl_logger:terminate_fsm(Name),
 		    {noreply, State#state{robots=lists:keydelete(Name, 2,
 								State#state.robots)}};
 		true ->
@@ -332,7 +334,8 @@ handle_cast(remove_all, State) ->
 			    false ->
 				supervisor:terminate_child(lights_sup, Id),
 				supervisor:delete_child(lights_sup, Id),
-				tl_logger:remove(Id);
+				tl_logger:remove(Id),
+				tl_logger:terminate_fsm(Id);
 			    true ->
 				#robot{spid=SPid} =
 				    lists:keyfind(Id, 2, State#state.robots),
@@ -340,7 +343,8 @@ handle_cast(remove_all, State) ->
 				tl_logger:stop_switch(Id),
 				supervisor:terminate_child(lights_sup, Id),
 				supervisor:delete_child(lights_sup, Id),
-				tl_logger:remove(Id)
+				tl_logger:remove(Id),
+				tl_logger:terminate_fsm(Id)
 			end
 		  end,
 		[R_Id || #robot{id=R_Id} <- State#state.robots]),
